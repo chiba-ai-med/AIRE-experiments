@@ -1,0 +1,30 @@
+# Data (large)
+data/
+output/
+work/
+
+# Logs and caches
+logs/
+benchmarks/
+.nextflow/
+.nextflow.log*
+.snakemake/
+
+# macOS
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.pyc
+
+# PDF (paper, not code)
+s41592-023-01938-4.pdf
+
+# Large diagnostic PDFs
+plot/diagnostic_*_chr4.pdf
+plot/diagnostic_scatter_*.pdf
+plot/diagnostic_thunder_*.pdf
+
+# Claude
+.claude/

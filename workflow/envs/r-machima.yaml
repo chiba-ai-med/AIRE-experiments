@@ -1,0 +1,38 @@
+name: r-machima
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # R core
+  - r-base>=4.4
+
+  # Used by run_machima2.R / evaluate_machima2.R / summarize_machima2.R
+  - r-matrix
+  - r-ggplot2
+  - r-gridextra
+  - r-yaml
+
+  # GitHub install machinery
+  - r-remotes
+
+  # libuv + r-fs: avoid the "fs source-compile fails because uv.h missing"
+  # cascade that breaks any GitHub install pulling fs as a transitive dep.
+  - libuv
+  - r-fs
+
+  # devtools wraps remotes and catches more dependency edge cases at install time
+  - r-devtools
+
+  # rikenbit/nnTensor compiled deps -- pulled here as binary so the
+  # post-install setup_r_packages.R doesn't need a system C++ toolchain.
+  # (Vicus is pulled transitively from GitHub at install time and is pure R.)
+  - r-rcppeigen
+  - r-rann
+  - r-rspectra
+
+  # nnTensor (rikenbit/nnTensor on GitHub for GNMF support), Machima (GitHub),
+  # misha (GitHub) installed via setup_r_packages.R after env creation.
+  # Seurat / Signac / Bioconductor are intentionally NOT here -- R rules in
+  # this project never touch them (clustering / label transfer / MuData I/O
+  # are all Python-side).

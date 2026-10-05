@@ -1,0 +1,15 @@
+name: nextflow
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - openjdk>=17
+  # Pin <26: Nextflow 26.04 (released 2026-04-29) has Groovy syntax changes
+  # that break nf-core/fetchngs 1.12.0 and nf-core/hic 2.1.0 (config.parsing
+  # error on `def check_max(obj, type) { ... }`). 24.10.x is the LTS series
+  # tested by both nf-core pipelines we use.
+  - nextflow>=24.10,<26
+  # cooler/cooltools used by the post-hic merge rule (sum WT reps -> bulk mcool)
+  - cooler
+  - cooltools

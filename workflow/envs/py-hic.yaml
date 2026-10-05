@@ -1,0 +1,35 @@
+name: py-hic
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.10
+  - pip
+
+  # Numerics
+  - numpy
+  - pandas
+  - scipy
+  - h5py
+  - pyranges
+
+  # Single-cell / ATAC
+  - scanpy
+  - anndata
+  - mudata
+  - macs2
+
+  # Hi-C
+  - cooler
+  - cooltools
+  - pairtools
+
+  # Download
+  - wget
+  - aria2
+
+  - leidenalg
+
+  - pip:
+    - snapatac2

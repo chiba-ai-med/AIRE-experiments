@@ -1,0 +1,239 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,bm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue!50!black,citecolor=black}
+
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\newcommand{\mat}[1]{\mathbf{#1}}
+\newcommand{\Hada}{\odot}
+\newcommand{\sci}[1]{\mathrm{#1}}
+
+\title{Machima2 Multiplicative Update Rules \\
+       \large symmetric epigenome variant, list mode}
+\author{AIRE-experiments / Machima v1.1.0}
+\date{2026-04-30}
+
+\begin{document}
+\maketitle
+
+\section{Setup and notation}
+
+\textbf{Inputs} (per chromosome $k = 1, \dots, K$, with $m$ cells shared across $k$):
+\begin{center}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{l l l}
+\toprule
+Symbol & Shape & Meaning \\
+\midrule
+$\mat{X}_{\sci{scATAC}}^{(k)}$ & $n_k \times m$              & scATAC bin $\times$ cell counts \\
+$\mat{X}_{\sci{HiC}}^{(k)}$    & $l_k \times l_k$ symmetric  & Hi-C contact matrix \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Factors} (Machima internal naming\footnote{The legacy suffix \emph{RNA} on $\mat{W}_{\sci{RNA}}$ and $\mat{H}_{\sci{RNA}}$ dates from the original Machima package, where the gene-expression modality drove this side. In Machima2 / AIRE-experiments these factors parameterize the scATAC bin modality $\mat{X}_{\sci{scATAC}}$.}):
+\begin{center}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{l l l l}
+\toprule
+Symbol & Shape & Sharing & Note \\
+\midrule
+$\mat{W}_{\sci{RNA}}^{(k)}$ & $n_k \times J$              & per-$k$  & ATAC-bin $\times$ component basis \\
+$\mat{H}_{\sci{RNA}}$       & $J \times m$                & shared   & component $\times$ cell loading \\
+$\mat{T}^{(k)}$             & $l_k \times n_k$            & per-$k$  & translator: Hi-C bin $\leftarrow$ ATAC bin \\
+$\mat{H}_{\sci{Sym}}$       & $J \times J$ symmetric      & shared   & cell-type contact propensity \\
+$\mat{U}^{(k)}$             & $l_k \times r$              & per-$k$  & low-rank left factor of $\mat{T}^{(k)}$ \\
+$\mat{V}^{(k)}$             & $n_k \times r$              & per-$k$  & low-rank right factor of $\mat{T}^{(k)}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Derived quantities}:
+\begin{align}
+\mat{G}^{(k)}              &= \mat{T}^{(k)} \mat{W}_{\sci{RNA}}^{(k)}                                    \quad (l_k \times J) \\
+\mat{Y}_{\sci{scATAC}}^{(k)} &= \mat{W}_{\sci{RNA}}^{(k)} \mat{H}_{\sci{RNA}}                              \quad (n_k \times m) \\
+\mat{Y}_{\sci{HiC}}^{(k)}   &= \mat{G}^{(k)} \mat{H}_{\sci{Sym}} (\mat{G}^{(k)})^\top                     \quad (l_k \times l_k)
+\end{align}
+
+\textbf{Notation conventions}: $\Hada$ is the Hadamard (element-wise) product. Powers applied to a matrix (e.g.\ $\mat{Y}^{\beta-1}$) are element-wise. $\pi_{\sci{scATAC}}^{(k)}, \pi_{\sci{HiC}}^{(k)}$ are per-chrom modality weights from \texttt{.weight()}. $L_1^X, L_2^X$ are sparsity / ridge penalties for factor $X$. $\rho(\beta)$ is the $\beta$-dependent relaxation exponent.
+
+\section{Beta-divergence gradient and the MU template}
+
+The element-wise $\beta$-divergence and its gradient:
+\begin{align}
+d_\beta(x, y) &= \begin{cases}
+  \dfrac{x^\beta + (\beta-1) y^\beta - \beta\, x\, y^{\beta-1}}{\beta(\beta-1)} & \beta \notin \{0, 1\} \\[4pt]
+  x \log(x/y) - x + y & \beta = 1 \;\;(\text{KL}) \\[2pt]
+  x/y - \log(x/y) - 1 & \beta = 0 \;\;(\text{IS})
+\end{cases} \\[6pt]
+\frac{\partial d_\beta}{\partial y} &= y^{\beta-1} - x \cdot y^{\beta-2}.
+\end{align}
+
+For a matrix loss $D_\beta(\mat{X}, \mat{Y}) = \sum_{ij} d_\beta(X_{ij}, Y_{ij})$ define the residuals
+\begin{align}
+\mat{M}_{\sci{scATAC}}^{(k)} &= \mat{Y}_{\sci{scATAC}}^{(k),\,\beta-1} \;-\; \mat{X}_{\sci{scATAC}}^{(k)} \Hada \mat{Y}_{\sci{scATAC}}^{(k),\,\beta-2} \\
+\mat{M}_{\sci{HiC}}^{(k)}    &= \mat{Y}_{\sci{HiC}}^{(k),\,\beta-1}    \;-\; \mat{X}_{\sci{HiC}}^{(k)}    \Hada \mat{Y}_{\sci{HiC}}^{(k),\,\beta-2}.
+\end{align}
+The standard non-negative MU rule for a factor $\boldsymbol{\Theta}$ with positive (denominator) and negative (numerator) gradient parts is
+\[
+\boldsymbol{\Theta} \;\leftarrow\; \boldsymbol{\Theta} \Hada
+\left(
+\frac{\nabla^{-}_{\Theta}}{\nabla^{+}_{\Theta} + (\text{penalties})}
+\right)^{\rho(\beta)}.
+\]
+For Frobenius ($\beta=2$) and KL ($\beta=1$), $\rho \equiv 1$; for Itakura-Saito ($\beta=0$), $\rho = 1/2$.
+
+\section{Update for $\mat{H}_{\sci{RNA}}$}\label{sec:H_RNA}
+
+Only the scATAC reconstruction depends on $\mat{H}_{\sci{RNA}}$. Sum over chromosomes:
+\begin{align}
+\nabla^-_{H_{\sci{RNA}}} &= \sum_{k} \pi_{\sci{scATAC}}^{(k)} \, (\mat{W}_{\sci{RNA}}^{(k)})^\top
+                              \big( \mat{X}_{\sci{scATAC}}^{(k)} \Hada \mat{Y}_{\sci{scATAC}}^{(k),\,\beta-2} \big) \\
+\nabla^+_{H_{\sci{RNA}}} &= \sum_{k} \pi_{\sci{scATAC}}^{(k)} \, (\mat{W}_{\sci{RNA}}^{(k)})^\top
+                              \mat{Y}_{\sci{scATAC}}^{(k),\,\beta-1}
+                            + L_1^{H_{\sci{RNA}}} + L_2^{H_{\sci{RNA}}} \mat{H}_{\sci{RNA}} \\
+\mat{H}_{\sci{RNA}} &\leftarrow \mat{H}_{\sci{RNA}} \Hada
+                                 \left( \nabla^-_{H_{\sci{RNA}}} \big/ \nabla^+_{H_{\sci{RNA}}} \right)^{\rho(\beta)}
+\end{align}
+
+\section{Update for $\mat{H}_{\sci{Sym}}$}\label{sec:H_Sym}
+
+Only the Hi-C reconstruction depends on $\mat{H}_{\sci{Sym}}$. With $\mat{X}_{\sci{HiC}}^{(k)}$ symmetric, the gradient is also symmetric, so no factor of $2$ from chain rule:
+\begin{align}
+\nabla^-_{H_{\sci{Sym}}} &= \sum_k \pi_{\sci{HiC}}^{(k)} \,
+       (\mat{G}^{(k)})^\top \big( \mat{X}_{\sci{HiC}}^{(k)} \Hada \mat{Y}_{\sci{HiC}}^{(k),\,\beta-2} \big) \mat{G}^{(k)} \\
+\nabla^+_{H_{\sci{Sym}}} &= \sum_k \pi_{\sci{HiC}}^{(k)} \,
+       (\mat{G}^{(k)})^\top \mat{Y}_{\sci{HiC}}^{(k),\,\beta-1} \mat{G}^{(k)}
+   + L_1^{H_{\sci{Sym}}} + L_2^{H_{\sci{Sym}}} \mat{H}_{\sci{Sym}} \\
+\mat{H}_{\sci{Sym}} &\leftarrow \mat{H}_{\sci{Sym}} \Hada
+                                 \left( \nabla^-_{H_{\sci{Sym}}} \big/ \nabla^+_{H_{\sci{Sym}}} \right)^{\rho(\beta)} \\
+\mat{H}_{\sci{Sym}} &\leftarrow \tfrac{1}{2}\left( \mat{H}_{\sci{Sym}} + \mat{H}_{\sci{Sym}}^\top \right)
+       \quad\text{(symmetrize)}
+\end{align}
+
+\section{Update for $\mat{W}_{\sci{RNA}}^{(k)}$}\label{sec:W}
+
+$\mat{W}_{\sci{RNA}}^{(k)}$ enters \emph{both} reconstructions: linearly in $\mat{Y}_{\sci{scATAC}}^{(k)}$ and quadratically in $\mat{Y}_{\sci{HiC}}^{(k)}$ via $\mat{G}^{(k)} = \mat{T}^{(k)} \mat{W}_{\sci{RNA}}^{(k)}$. The MU update sums the gradient parts from both sides (the chain-rule factor $2$ from $\mat{W}$ appearing twice in the symmetric Hi-C reconstruction cancels in the ratio):
+\begin{align}
+\nabla^-_{\sci{scATAC}, k} &= \pi_{\sci{scATAC}}^{(k)} \big( \mat{X}_{\sci{scATAC}}^{(k)} \Hada \mat{Y}_{\sci{scATAC}}^{(k),\,\beta-2} \big) \mat{H}_{\sci{RNA}}^\top \\
+\nabla^+_{\sci{scATAC}, k} &= \pi_{\sci{scATAC}}^{(k)} \mat{Y}_{\sci{scATAC}}^{(k),\,\beta-1} \mat{H}_{\sci{RNA}}^\top \\[4pt]
+\nabla^-_{\sci{HiC}, k} &= \pi_{\sci{HiC}}^{(k)} (\mat{T}^{(k)})^\top \big( \mat{X}_{\sci{HiC}}^{(k)} \Hada \mat{Y}_{\sci{HiC}}^{(k),\,\beta-2} \big) \mat{T}^{(k)} \mat{W}_{\sci{RNA}}^{(k)} \mat{H}_{\sci{Sym}} \\
+\nabla^+_{\sci{HiC}, k} &= \pi_{\sci{HiC}}^{(k)} (\mat{T}^{(k)})^\top \mat{Y}_{\sci{HiC}}^{(k),\,\beta-1} \mat{T}^{(k)} \mat{W}_{\sci{RNA}}^{(k)} \mat{H}_{\sci{Sym}} \\[4pt]
+\nabla^-_{W, k} &= \nabla^-_{\sci{scATAC}, k} + \nabla^-_{\sci{HiC}, k} \\
+\nabla^+_{W, k} &= \nabla^+_{\sci{scATAC}, k} + \nabla^+_{\sci{HiC}, k} + L_1^{W_{\sci{RNA}}} + L_2^{W_{\sci{RNA}}} \mat{W}_{\sci{RNA}}^{(k)} \\[4pt]
+\mat{W}_{\sci{RNA}}^{(k)} &\leftarrow \mat{W}_{\sci{RNA}}^{(k)} \Hada
+                          \left( \nabla^-_{W, k} \big/ \nabla^+_{W, k} \right)^{\rho(\beta)}
+\end{align}
+
+This is where the cross-modality coupling lives: only $\mat{W}_{\sci{RNA}}^{(k)}$ receives gradient from \emph{both} $\mat{X}_{\sci{scATAC}}^{(k)}$ and $\mat{X}_{\sci{HiC}}^{(k)}$.
+
+\section{Update for $\mat{T}^{(k)}$ (full dense)}\label{sec:T}
+
+Define $\mat{A}^{(k)} = \mat{W}_{\sci{RNA}}^{(k)} \mat{H}_{\sci{Sym}} (\mat{W}_{\sci{RNA}}^{(k)})^\top$ ($n_k \times n_k$, symmetric). Then $\mat{Y}_{\sci{HiC}}^{(k)} = \mat{T}^{(k)} \mat{A}^{(k)} (\mat{T}^{(k)})^\top$ and (factor $2$ cancels):
+\begin{align}
+\nabla^-_{T, k} &= \pi_{\sci{HiC}}^{(k)} \big( \mat{X}_{\sci{HiC}}^{(k)} \Hada \mat{Y}_{\sci{HiC}}^{(k),\,\beta-2} \big) \mat{G}^{(k)} \mat{H}_{\sci{Sym}} (\mat{W}_{\sci{RNA}}^{(k)})^\top \\
+\nabla^+_{T, k} &= \pi_{\sci{HiC}}^{(k)} \mat{Y}_{\sci{HiC}}^{(k),\,\beta-1} \mat{G}^{(k)} \mat{H}_{\sci{Sym}} (\mat{W}_{\sci{RNA}}^{(k)})^\top
+                  + L_1^{T} + L_2^{T,\sci{eff}} \mat{T}^{(k)} \\
+\mat{T}^{(k)} &\leftarrow \mat{T}^{(k)} \Hada
+                  \left( \nabla^-_{T, k} \big/ \nabla^+_{T, k} \right)^{\rho(\beta)}
+\end{align}
+where $L_2^{T,\sci{eff}} = L_2^{T} + \lambda_T$ if $T_{\text{regularization}} = \texttt{l2}$, else $L_2^{T,\sci{eff}} = L_2^{T}$.
+
+\paragraph{Frobenius unit rescale.} If $T_{\text{regularization}} = \texttt{frobenius\_unit}$, immediately after the MU update:
+\begin{align}
+c &= \max\!\left( \sqrt{\tfrac{1}{K} \textstyle\sum_k \|\mat{T}^{(k)}\|_F^2}, \;\; \epsilon \right),
+   \qquad \epsilon = \sqrt{\texttt{.Machine\$double.eps}} \approx 1.49 \times 10^{-8} \\
+\mat{T}^{(k)} &\leftarrow \mat{T}^{(k)} / c \quad (\forall k) \\
+\mat{H}_{\sci{Sym}} &\leftarrow c^2 \, \mat{H}_{\sci{Sym}}
+\end{align}
+This preserves $\mat{Y}_{\sci{HiC}}^{(k)}$ exactly because the same scalar $c$ is applied to every $\mat{T}^{(k)}$, while $\mat{H}_{\sci{Sym}}$ is shared.
+
+\section{Update for $\mat{T}^{(k)} = \mat{U}^{(k)} (\mat{V}^{(k)})^\top$ (low-rank)}
+
+The low-rank parameterization replaces the dense $\mat{T}^{(k)}$ with two factors $\mat{U}^{(k)}: l_k \times r$, $\mat{V}^{(k)}: n_k \times r$. The chain rule gives
+\[
+\frac{\partial L}{\partial \mat{U}^{(k)}} = \frac{\partial L}{\partial \mat{T}^{(k)}} \mat{V}^{(k)},
+\qquad
+\frac{\partial L}{\partial \mat{V}^{(k)}} = \left( \frac{\partial L}{\partial \mat{T}^{(k)}} \right)^{\!\!\top} \mat{U}^{(k)}.
+\]
+
+\subsection{$\mat{U}^{(k)}$ update}\label{sec:U}
+
+Define a shared right intermediate $\mat{B}^{(k)} = \mat{H}_{\sci{Sym}} (\mat{W}_{\sci{RNA}}^{(k)})^\top \mat{V}^{(k)}$ ($J \times r$). Then:
+\begin{align}
+\nabla^-_{U, k} &= \pi_{\sci{HiC}}^{(k)} \big( \mat{X}_{\sci{HiC}}^{(k)} \Hada \mat{Y}_{\sci{HiC}}^{(k),\,\beta-2} \big) \mat{G}^{(k)} \mat{B}^{(k)} \\
+\nabla^+_{U, k} &= \pi_{\sci{HiC}}^{(k)} \mat{Y}_{\sci{HiC}}^{(k),\,\beta-1} \mat{G}^{(k)} \mat{B}^{(k)}
+                  + L_1^{T} + L_2^{T} \mat{U}^{(k)} \\
+\mat{U}^{(k)} &\leftarrow \mat{U}^{(k)} \Hada
+                          \left( \nabla^-_{U, k} \big/ \nabla^+_{U, k} \right)^{\rho(\beta)}
+\end{align}
+
+\subsection{$\mat{V}^{(k)}$ update}\label{sec:V}
+
+After the $\mat{U}^{(k)}$ update, recompute the materialized quantities $\mat{T}^{(k)} \leftarrow \mat{U}^{(k)} (\mat{V}^{(k)})^\top$, $\mat{G}^{(k)} \leftarrow \mat{T}^{(k)} \mat{W}_{\sci{RNA}}^{(k)}$, $\mat{Y}_{\sci{HiC}}^{(k)} \leftarrow \mat{G}^{(k)} \mat{H}_{\sci{Sym}} (\mat{G}^{(k)})^\top$ (Gauss-Seidel ordering for faster convergence than independent updates). Then:
+\begin{align}
+\nabla^-_{V, k} &= \pi_{\sci{HiC}}^{(k)} \mat{W}_{\sci{RNA}}^{(k)} \mat{H}_{\sci{Sym}} (\mat{G}^{(k)})^\top
+                       \big( \mat{X}_{\sci{HiC}}^{(k)} \Hada \mat{Y}_{\sci{HiC}}^{(k),\,\beta-2} \big) \mat{U}^{(k)} \\
+\nabla^+_{V, k} &= \pi_{\sci{HiC}}^{(k)} \mat{W}_{\sci{RNA}}^{(k)} \mat{H}_{\sci{Sym}} (\mat{G}^{(k)})^\top
+                       \mat{Y}_{\sci{HiC}}^{(k),\,\beta-1} \mat{U}^{(k)}
+                  + L_1^{T} + L_2^{T} \mat{V}^{(k)} \\
+\mat{V}^{(k)} &\leftarrow \mat{V}^{(k)} \Hada
+                          \left( \nabla^-_{V, k} \big/ \nabla^+_{V, k} \right)^{\rho(\beta)}
+\end{align}
+Re-materialize $\mat{T}^{(k)} \leftarrow \mat{U}^{(k)} (\mat{V}^{(k)})^\top$ so the rest of the loop sees a consistent $\mat{T}^{(k)}$.
+
+\subsection*{Initialization}
+
+\begin{itemize}[leftmargin=1.5em, itemsep=0.2em]
+  \item No user-supplied $\mat{T}$: $\mat{U}^{(k)}, \mat{V}^{(k)} \sim \mathrm{Uniform}(0, 1)$ element-wise.
+  \item User-supplied dense $\mat{T}^{(k)}$: take rank-$r$ truncated SVD $\mat{T}^{(k)} = \mat{U}_{\text{svd}} \mat{S} \mat{V}_{\text{svd}}^\top$, then
+  $\mat{U}^{(k)} = | \mat{U}_{\text{svd}} | \cdot \sqrt{\mat{S}}$,
+  $\mat{V}^{(k)} = | \mat{V}_{\text{svd}} | \cdot \sqrt{\mat{S}}$ (absolute value enforces non-negativity; the symmetric square-root split balances the magnitude).
+\end{itemize}
+After initialization, SVD is \emph{not} re-invoked. The main loop only multiplicatively updates $\mat{U}, \mat{V}$.
+
+\section{Algorithm pseudocode}
+
+\begin{algorithm}[H]
+\caption{Machima2 outer loop (one outer iteration of the symmetric variant)}
+\label{alg:machima2}
+\begin{algorithmic}[1]
+\State \textbf{Input:} $\{\mat{X}_{\sci{scATAC}}^{(k)}\}, \{\mat{X}_{\sci{HiC}}^{(k)}\}$, init for $\{\mat{W}_{\sci{RNA}}^{(k)}\}, \mat{H}_{\sci{RNA}}, \mat{H}_{\sci{Sym}}$,
+       and either $\{\mat{T}^{(k)}\}$ or $\{\mat{U}^{(k)}, \mat{V}^{(k)}\}$
+\State \textbf{Hyperparameters:} $J$, $\beta$, $\rho$, num\_iter, $T_{\sci{reg}} \in \{\texttt{none}, \texttt{frobenius\_unit}, \texttt{l2}, \texttt{low\_rank}\}$, $T_{\sci{rank}}$ (if low\_rank), $\lambda_T$ (if l2), L1/L2 penalties, fix flags
+\For{$\sci{iter} = 1, \dots, \sci{num\_iter}$}
+  \If{$\neg\sci{fixT}$}
+    \If{$T_{\sci{reg}} = \texttt{low\_rank}$}
+      \State Update $\mat{U}^{(k)}$ for all $k$ (Sec.~\ref{sec:U}); rematerialize $\mat{T}^{(k)}, \mat{G}^{(k)}, \mat{Y}_{\sci{HiC}}^{(k)}$
+      \State Update $\mat{V}^{(k)}$ for all $k$ (Sec.~\ref{sec:V}); rematerialize $\mat{T}^{(k)}$
+    \Else
+      \State Update $\mat{T}^{(k)}$ for all $k$ (Sec.~\ref{sec:T})
+      \If{$T_{\sci{reg}} = \texttt{frobenius\_unit}$}
+        \State $c \leftarrow \max\!\left( \sqrt{\tfrac{1}{K}\sum_k \|\mat{T}^{(k)}\|_F^2 },\; \epsilon \right)$
+        \State $\mat{T}^{(k)} \leftarrow \mat{T}^{(k)} / c$ for all $k$;\quad $\mat{H}_{\sci{Sym}} \leftarrow c^2 \mat{H}_{\sci{Sym}}$
+      \EndIf
+    \EndIf
+  \EndIf
+  \If{$\neg\sci{fixW\_RNA}$}\quad Update $\mat{W}_{\sci{RNA}}^{(k)}$ for all $k$ (Sec.~\ref{sec:W}) \EndIf
+  \If{$\neg\sci{fixH\_RNA}$}\quad Update $\mat{H}_{\sci{RNA}}$ (Sec.~\ref{sec:H_RNA}) \EndIf
+  \If{$\neg\sci{fixH\_Sym}$}\quad Update $\mat{H}_{\sci{Sym}}$ and symmetrize (Sec.~\ref{sec:H_Sym}) \EndIf
+  \State Compute reconstruction error and relative change; check convergence threshold
+\EndFor
+\State \textbf{Return:} all factors and (if low\_rank) $\mat{U}, \mat{V}$ as \texttt{T\_factors}
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Notes on the order of updates.} Updating $\mat{T}$ (or $\mat{U}, \mat{V}$) before $\mat{W}_{\sci{RNA}}$ means the next $\mat{W}_{\sci{RNA}}$ update sees the freshest reconstruction; updating $\mat{H}_{\sci{Sym}}$ last, after $\mat{T}$ and $\mat{W}$ have moved, lets it absorb the residual scale (especially relevant under the \texttt{frobenius\_unit} rescale). Each step is a strict descent in the multi-modal $\beta$-divergence under the standard MU sufficient conditions ($\rho \le 1$, non-negative inputs).
+
+\paragraph{Cost per outer iteration (low\_rank vs full).} Dense $\mat{T}^{(k)}$ requires $O(l_k^2 \, n_k)$ work per update; the low-rank parameterization reduces this to $O((l_k + n_k) \, r \, J)$ when $r \ll \min(l_k, n_k)$, a reduction of two orders of magnitude at $r = 14$, $J = 7$ on a $1900 \times 1900$ block.
+
+\end{document}

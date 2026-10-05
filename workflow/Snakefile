@@ -1,0 +1,37 @@
+# Top-level entry point.
+#
+# Includes the phase smks (preprocess / machima / evaluate / plot) so the
+# DAG sees every rule. Phase ordering inside the file is important: each
+# include defines a virtual target rule (rule preprocess / rule machima /
+# rule evaluate / rule plot) that the final `rule all` aggregates.
+#
+# Usage:
+#   bash workflow/run.sh                 # full pipeline
+#   bash workflow/run_preprocess.sh      # preprocess phase only
+#   bash workflow/run_machima.sh         # ... up to machima
+#   bash workflow/run_evaluate.sh        # ... up to evaluate
+#   bash workflow/run_plot.sh            # ... up to plot
+#
+# Or directly:
+#   snakemake --cores 4 --use-conda all
+#   snakemake --cores 4 --use-conda preprocess
+#   snakemake --cores 4 --use-conda machima
+#   snakemake --cores 4 --use-conda evaluate
+#   snakemake --cores 4 --use-conda plot
+
+configfile: "workflow/config.yaml"
+
+include: "common.smk"
+include: "preprocess.smk"
+include: "machima.smk"
+include: "evaluate.smk"
+include: "plot.smk"
+
+rule all:
+    """Full pipeline: every phase target."""
+    input:
+        rules.preprocess.input,
+        rules.machima.input,
+        rules.evaluate.input,
+        rules.plot.input,
+    default_target: True

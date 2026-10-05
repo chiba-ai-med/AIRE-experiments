@@ -1,0 +1,179 @@
+# AIRE-experiments configuration
+# See CLAUDE.md for the overall design.
+
+genome: mm10
+
+# Bin resolutions for Hi-C and ATAC re-binning.
+# Shake-down pass: 100kb only -- enough for TAD-level deconvolution and
+# avoids the multi-hour misha gextract at 10kb (chr1-chr1 alone produces
+# ~380M bin pairs at 10kb; 3.8M at 100kb). Re-add 25kb / 10kb after the
+# end-to-end pipeline has been validated.
+resolutions:
+  - 100000
+# - 25000
+# - 10000
+
+# Brain (practice) ----------------------------------------------------------
+brain:
+  reference:
+    # 10x multiome (scRNA + scATAC), mouse cortex E15.5.
+    # Subseries of GSE210749. Series-level supplementary holds:
+    #   - GSE210747_Mouse_cortex_DGEM.tsv.gz                (RNA gene-cell counts)
+    #   - GSE210747_scATACseq_Mouse_cortex_fragment_counts.tsv.gz (peak-cell counts; unused, we re-call peaks)
+    #   - <sample>_atac_fragments.tsv.gz (per protocol-condition; we re-call peaks)
+    accession: GSE210747
+    samples:
+      - 10x_complex
+      - 10x_no_perm
+      - TST
+      - TST_NP40_004
+    primary_sample: 10x_complex   # standard 10x; used for first iteration
+  query:
+    # Bonev et al. bulk Hi-C. FACS-purified E14.5 neocortex.
+    # Files are in pairs (Cwalks/Shaman) format -- use `cooler cload pairs`.
+    # Initial run uses only 1 NPC + 1 CN rep (~36 GB) to validate the pipeline
+    # before pulling all 8 reps (~141 GB total).
+    accession: GSE96107
+    samples:
+      - GSM2533835  # ncx_npc1
+      - GSM2533839  # ncx_cn1
+    # Per-celltype grouping for sorted-bulk ground-truth validation
+    # (validate_against_sorted_bulk). The combined mcool (samples) is the
+    # Machima training input; these per-celltype mcools are held-out targets.
+    celltype_samples:
+      npc:
+        - GSM2533835
+      cn:
+        - GSM2533839
+    # Additional reps (re-enable once the pipeline is shaken down):
+    #   - GSM2533836  # ncx_npc2  -> celltype_samples.npc
+    #   - GSM2533837  # ncx_npc3  -> celltype_samples.npc
+    #   - GSM2533838  # ncx_npc4  -> celltype_samples.npc
+    #   - GSM2533840  # ncx_cn2   -> celltype_samples.cn
+    #   - GSM2533841  # ncx_cn3   -> celltype_samples.cn
+    #   - GSM2533842  # ncx_cn4   -> celltype_samples.cn
+
+# mTEC / AIRE (production) --------------------------------------------------
+mtec:
+  reference:
+    # 10x cellranger-arc output already on disk.
+    # We use only atac_fragments.tsv.gz + filtered_feature_bc_matrix/matrix.mtx.gz
+    # and re-call peaks with MACS2 to match the brain path.
+    local: data/mtec/reference
+  query:
+    # mTEC AIRE+/AIRE- bulk Hi-C.
+    #
+    # GEO GSE180937 supplementary contains only PC1 compartment bedGraphs
+    # and ChIP-seq bigWigs -- NO contact matrices. The actual Hi-C data
+    # exists only as raw fastq in SRA project SRP330308 / PRJNA750244.
+    # Hi-C processing is therefore handled by workflow/sra_hic.smk, which
+    # runs nf-core/fetchngs (SRA -> fastq) + nf-core/hic (fastq -> mcool).
+    # See project_mtec_data_state memory.
+    accession: GSE180937              # kept for paper reference only
+    sra_project: SRP330308
+    sra_samples:
+      WT_Rep_1:     SRX11570182
+      WT_Rep_2:     SRX11570183
+      Aire_KO_Rep_1: SRX11570184
+      Aire_KO_Rep_2: SRX11570185
+    bulk_replicates:                   # which SRX to merge into the X_Epi bulk mcool
+      - WT_Rep_1                       # multiome reference is WT mTEChi, so use WT only
+      - WT_Rep_2
+    restriction_site: '^GATC'          # MboI used by Bansal et al. 2021 (verify in methods)
+    ligation_site: 'GATCGATC'
+
+# Machima2 ------------------------------------------------------------------
+machima2:
+  # Match scRNA leiden cluster count (7 in brain at resolution=0.5).
+  J: 7
+  num_iter: 30
+  # Transfer-mode (Stage A: pure NMF on X_RNA, Stage B: Machima2 with frozen W/H_RNA)
+  # Stage B has fewer free params so converges faster than joint.
+  transfer_num_iter: 100
+  # Stage A NMF settings (forwarded to nnTensor::NMF inside run_machima2.R).
+  nmf_num_iter: 200
+  nmf_n_restart: 5
+  # Slimmed 2026-05-01: 13-stage shake-down on brain 100kb showed only
+  # joint x Tidentity discriminates NPC vs CN (rel_frob 0.123, diff_pearson
+  # 0.951). All transfer*/supervised*/jointLowRank stages and Tdense variants
+  # failed cell-type separation, so they are dropped from the run grid.
+  # Definitions retained in src/run_machima2.R + workflow/*.smk for history.
+  T_variants:
+    - identity
+  stages:
+    - joint
+  # GNMF graph-regulariser strength on the V (cell) side. Higher = stronger
+  # within-cluster smoothing of H_RNA. lambda=0 reduces to plain NMF.
+  gnmf_lambda_V: 1.0
+  # T regularization (Machima 1.0.0+). Only effective when T is learned
+  # (Dense T variant); fixT=TRUE Identity T variant ignores it.
+  #   none           : original behaviour (T can absorb all magnitude, H_Sym
+  #                    collapses to ~1e-12 -> no cell-type discrimination)
+  #   frobenius_unit : per-iter Frobenius normalize T per chrom and shift
+  #                    magnitude to H_Sym (preserves T.W product). No
+  #                    hyperparameter, recommended default.
+  #   l2             : add lambda_T to L2_T penalty in T's update step
+  T_regularization: frobenius_unit
+  lambda_T: 0.0
+  # Rank for T_regularization=low_rank (used by stage=jointLowRank).
+  # Heuristic: 2*J keeps capacity above the informative rank while still
+  # bounded well below min(l_k, n_k) at 100kb (chr1: ~1900 bins -> rank
+  # 14 leaves ~3 orders of magnitude headroom).
+  T_rank: 14
+  # H_Sym structure (Machima >= 1.2.0).
+  #   symmetric : full J(J+1)/2 entries (sym-Tucker; original behaviour)
+  #   diagonal  : J entries (sym-CP / sym-PARAFAC; each component has an
+  #               independent contact pattern, no cross-component
+  #               "interaction" entries). Recommended for cell-type
+  #               deconvolution -- 13-stage shake-down showed off-diagonal
+  #               H_Sym is not biologically interpretable.
+  H_Sym_structure: diagonal
+  # Loss balance between X_RNA and X_Epi terms (Machima >= 1.3.0).
+  # Both terms are first Frobenius-normalised internally (Pi_RNA / Pi_Epi
+  # via .weight()). lambda_balance then tilts: 0=RNA only, 0.5=equal
+  # (default; matches pre-1.3.0 behaviour), 1=Epi only.
+  # Lambda scan on brain 100kb showed:
+  #   - diagonal mode is robust across [0.5, 0.99]; rel_frob worsens
+  #     gradually (0.27 -> 0.46), W column scale explodes at high lambda
+  #   - comp_* (background absorber) emerges at lambda >= 0.95
+  # Canonical: 0.5.
+  lambda_balance: 0.5
+  hic_sources:
+    brain:
+      - bulk      # GSE96107 averaged across reps
+      # - sc_aggregate  # GSE238001 / GSE253407 cell-type aggregate (deferred)
+    mtec:
+      - bulk      # GSE180937 averaged
+
+# Sorted-population validation -----------------------------------------------
+# annotate_cluster_celltype_brain scores each leiden cluster against these
+# marker signatures and assigns the higher-scoring side, or 'other' when the
+# score gap is below score_min_diff.
+celltype_markers:
+  brain:
+    npc:
+      # apical / radial glia / intermediate progenitors
+      - Pax6
+      - Sox2
+      - Nes
+      - Hes1
+      - Vim
+      - Fabp7
+      - Eomes
+    cn:
+      # cortical neurons (deep + upper layer markers)
+      - Tubb3
+      - Map2
+      - Rbfox3
+      - Bcl11b
+      - Tbr1
+      - Satb2
+      - Neurod2
+score_min_diff: 0.10  # Restored 2026-05-01 from 0.0 to filter ambiguous clusters.
+                      # 0.0 (previous) forced all 7 leiden clusters into NPC/CN
+                      # binary, including cluster_1 (score_diff=+0.03) and
+                      # cluster_6 (-0.06) which are essentially noise. 0.15 is
+                      # too aggressive (drops 4/7); 0.10 keeps 5 confident
+                      # clusters and labels {1, 6} as 'other' (~28% of cells).
+                      # 'other'-labeled components are excluded from NPC/CN
+                      # validation but cells still go into Machima2 input.
